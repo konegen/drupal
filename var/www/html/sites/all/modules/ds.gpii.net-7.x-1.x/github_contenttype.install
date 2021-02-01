@@ -1,0 +1,178 @@
+<?php
+/**
+ * Implements hook_install().
+ */
+function github_contenttype_install() {
+
+  node_types_rebuild();
+
+  $t = get_t();
+
+  // Step 1 - Define the custom content type
+
+  $content_type = [
+
+    'type' => 'github_content',
+    'name' => $t('Github Project'),
+    'description' => $t('Create a new github projects'),
+    'title_label' => $t('Github Project title'),
+    'base' => 'node_content',
+    'custom' => TRUE,
+
+  ];
+
+  $node_type = node_type_set_defaults($content_type);
+  node_type_save($node_type);
+  //node_add_body_field($node_type);
+
+
+  // Step 2 - Create new fields
+
+  //$properties = entity_get_info("github_remote_repository");
+  //dpm($properties);
+  $properties = entity_get_property_info("github_remote_repository");
+  //dpm($properties['properties']['entity_data']['property info'], "Property");
+
+  $query = new EntityFieldQuery();
+  $query->entityCondition('entity_type', 'github_remote_repository');
+  $result = $query->execute();
+  //dpm($result, "EFQ");
+
+  foreach (_github_contenttype_installed_fields() as $field) { // Loop through fields and create them one by one
+
+    field_create_field($field);
+
+  }
+
+  foreach (_github_contenttype_installed_instances() as $instance) { // Loop through our instances
+
+    $instance['entity_type'] = 'node';
+    $instance['bundle'] = 'github_content'; // Attach the instance to our content type
+
+    field_create_instance($instance);
+
+  }
+
+}
+
+function _github_contenttype_installed_fields() {
+  $t = get_t();
+  return [
+
+    'github_reference' => [
+      'field_name' => 'github_reference',
+      'type' => 'entityreference',
+      'cardinality' => 1,
+      'settings' => [
+        'target_type' => 'github_remote_repository',
+      ],
+    ],
+
+    'github_name' => [
+
+      'field_name' => 'github_name',
+      'type' => 'text',
+      'cardinality' => 1,
+
+    ],
+
+    'github_readme' => [
+
+      'field_name' => 'github_readme',
+      'type' => 'text_long',
+      'cardinality' => 1,
+
+    ],
+
+  ];
+}
+
+function _github_contenttype_installed_instances() {
+  $t = get_t();
+
+  return [
+
+    'github_reference' => [
+      'field_name' => 'github_reference',
+      'label' => 'Repository',
+      'widget' => [
+        'type' => 'options_select',
+      ],
+    ],
+
+    'github_name' => [
+      'field_name' => 'github_name',
+      'type' => 'text',
+      'label' => $t('Github Repository Name'),
+      'widget' => [
+        'type' => 'text_textfield',
+        'settings' => ['rows' => 5],
+      ],
+      'display' => [
+        'example_node_list' => [
+          'label' => $t('Github Repository Name'),
+          'type' => 'text'
+        ]
+      ],
+
+    ],
+
+    'github_readme' => [
+
+      'field_name' => 'github_readme',
+      'label' => $t('Github Repository Readme'),
+      'widget' => [
+        'type' => 'text_textarea',
+      ],
+
+    ],
+
+  ];
+}
+
+
+/**
+ * Implements hook_uninstall().
+ */
+function github_contenttype_uninstall() {
+
+  // Remove existing content
+
+  $query = 'SELECT nid ';
+  $query .= 'FROM {node} n ';
+  $query .= 'WHERE n.type = :type ';
+
+  $result = db_query($query, [':type' => 'github_content']);
+
+  $nids = [];
+
+  foreach ($result as $row) {
+
+    $nids[] = $row->nid;
+
+  }
+
+  node_delete_multiple($nids);
+
+  // Delete fields and instances
+
+  foreach (field_info_instances('node', 'github_content') as $field_name => $instance) {
+
+    field_delete_instance($instance);
+
+  }
+
+  $fields = array_keys(_github_contenttype_installed_fields());
+  foreach ($fields as $field) {
+    field_delete_field($field);
+  }
+
+  // Delete content type
+
+  node_type_delete('github_content');
+
+  // Purge field batch
+
+  field_purge_batch(1000); // Purge delete fields data
+
+}

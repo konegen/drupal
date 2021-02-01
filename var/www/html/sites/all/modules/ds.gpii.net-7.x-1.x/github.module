@@ -1,0 +1,450 @@
+<?php
+
+/**
+ * @file
+ * Github module for integrating github repo information into Drupal.
+ */
+
+/**
+ * Implements hook_help().
+ *
+ * Displays help and module information.
+ */
+function github_help($path, $arg) {
+  switch ($path) {
+    case "admin/help#github":
+      return t("<h2>Showcase Github projects in Drupal.</h2>
+      <h3>Instructions</h3>
+      <p>Unpack in the <em>modules</em> folder (currently in the root of your Drupal 8 installation) and enable in <strong>/admin/modules</strong>.</p>
+      <p>Then, visit <strong>/admin/config/development/github</strong> and configure your access token.</p>
+      <h3>Attention</h3>
+      <p>Most bugs have been ironed out, holes covered, features added. But this module is a work in progress. Please report bugs and suggestions.</p>
+      ");
+  }
+}
+
+/**
+ * Implements hook_menu().
+ *
+ * Display menu for monfiguration page.
+ */
+function github_menu() {
+  $items = array();
+
+  $items['admin/config/development/github'] = array(
+    'title' => 'Github projects',
+    'description' => 'Configuration for Github projects module',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('github_form'),
+    'access arguments' => array('administer site configuration'),
+    'type' => MENU_NORMAL_ITEM,
+    'file' => 'src/Form/GithubConfigForm.inc',
+  );
+
+  $items['github.com/%github_remote_repository/%'] = array(
+    'title' => 'Remote Repository',
+    'page callback' => 'github_remote_repository_view',
+    'page arguments' => array(1),
+    'load arguments' => array(2),
+    'access arguments' => array('access content'),
+  );
+
+  return $items;
+}
+
+/****************************************************************************
+ ** Entity APIs
+ ****************************************************************************/
+
+/**
+ * Implements hook_entity_info().
+ *
+ * @todo Add 'bundles' for different types of remote content.
+ * @todo Remove 'static cache' and 'field cache' settings after development.
+ */
+function github_entity_info() {
+  $entities = array();
+
+  $entities['github_remote_repository'] = array(
+
+    // Core properties.
+    'label' => t('Repository'),
+    'controller class' => 'RemoteEntityAPIDefaultController',
+    'base table' => 'github_remote_repositories',
+    'uri callback' => 'entity_class_uri',
+    'label callback' => 'remote_entity_entity_label',
+    'fieldable' => FALSE,
+    'entity keys' => array(
+      'id' => 'eid',
+      'label' => 'name',
+      'bundle' => array(),
+    ),
+    'access callback' => 'github_entity_callback',
+    'view modes' => array(
+      'full' => array(
+        'label' => t('Full content'),
+        'custom settings' => FALSE,
+      ),
+    ),
+    'static cache' => FALSE,
+    'field cache' => FALSE,
+
+    // Entity API properties.
+    'entity class' => 'GithubRepository',
+    'module' => 'github',
+    'metadata controller class' => 'RemoteEntityAPIDefaultMetadataController',
+    'views controller class' => 'EntityDefaultViewsController',
+
+    // Remote Entity API properties.
+    'remote base table' => 'github_remote_repositories',
+    'remote entity keys' => array(
+      'remote id' => 'full_name',
+      'label' => 'name',
+    ),
+    'expiry' => array(
+      // Number of seconds before a locally cached instance must be refreshed
+      // from the remote source.
+      'expiry time' => 600,
+      // A boolean indicating whether or not to delete expired local entitiures
+      // on cron.
+      'purge' => FALSE,
+    ),
+  );
+
+  // Get the property map data.
+  $remote_properties = github_get_remote_properties();
+
+  // Assign each map to its corresponding entity.
+  foreach ($entities as $key => $einfo) {
+    $entities[$key]['property map'] =
+    drupal_map_assoc(array_keys($remote_properties[$key])); //1:1 mapping to remote entity for wrapper
+  }
+
+  // Return all of the entity information.
+  return $entities;
+}
+
+function github_parseLink($l)
+  {
+	  $links = [];
+	  $links = explode(',', $l);
+	  $temp = count($links);
+	  foreach ($links as $link) {
+		  $segments = [];
+		  $segments = explode(';', $link);
+		  if (count($segments) < 2)
+			  continue;
+		  $linkPart = trim($segments[0]);
+
+		  $linklen = strlen($linkPart);
+
+		  $linkPart = substr($linkPart, 1, $linklen - 2);
+		  for ($i = 1; $i < count($segments); $i++) {
+			  $rel = trim($segments[1]);
+			  if(strcmp($rel, 'rel="next"')==0) {
+				  return substr($linkPart, 23);
+			  }
+		  }
+	  }
+	  return NULL;
+  }
+
+/**
+ * Implements hook_entity_property_info_alter().
+ *
+ * This is needed to use wrappers to access the remote entity
+ * data in the entity_data property of remote entities.
+ *
+ * @see: Page 107 of the Programming Drupal 7 Entities book.  The code below is
+ *   a variation on it.
+ * @todo: Remove whenever this gets added to the remote_entity module.
+ */
+function github_entity_property_info_alter(&$info) {
+
+	// Set the entity types and get their properties.
+	$entity_types = array(
+		'github_remote_repository',
+	);
+
+	$remote_properties = github_get_remote_properties();
+
+	// Assign the property data to each entity.
+	foreach ($entity_types as $entity_type) {
+		$properties = &$info[$entity_type]['properties'];
+		$entity_data = &$properties['entity_data'];
+		$pp = &$remote_properties[$entity_type];
+		$entity_data['type'] = 'remote_entity_' . $entity_type;
+
+		// Set the default getter callback for each property.
+		foreach ($pp as $key => $pinfo) {
+			$pp[$key]['getter callback'] = 'entity_property_verbatim_get';
+		}
+
+		// Assign the updated property info to the entity info.
+		$entity_data['property info'] = $pp;
+	}
+}
+
+/**
+ * Get remote property information for remote entities.
+ *
+ * @return array
+ *   An array of property information keyed by entity type.
+ */
+function github_get_remote_properties() {
+
+	// Initialize a list of entity properties.
+	$properties = array();
+
+	// Define properties for the entity type.
+	$properties['github_remote_repository'] = array(
+
+		// Repository information.
+		'id' => array(
+			'label' => 'ID',
+			'type' => 'integer',
+			'description' => 'The id of the repository.',
+		),
+		'name' => array(
+			'label' => 'Name',
+			'type' => 'text',
+			'description' => 'The name of the repository.',
+		),
+		'full_name' => array(
+			'label' => 'Full name',
+			'type' => 'text',
+			'description' => 'The full name of the repository.',
+		),
+		'description' => array(
+			'label' => 'Description',
+			'type' => 'text',
+			'description' => 'The description of the repository.',
+		),
+		'readme' => array(
+			'label' => 'Readme',
+			'type' => 'text',
+			'description' => 'The readme file of the repository.',
+		),
+		'url' => array(
+			'label' => 'URL',
+			'type' => 'text',
+			'description' => 'The api url of the repository.',
+		),
+		'html_url' => array(
+			'label' => 'URL',
+			'type' => 'text',
+			'description' => 'The url of the repository.',
+		),
+		'topics' => array(
+			'label' => 'Topics',
+			'type' => 'text',
+			'description' => 'The topics of the repository.',
+		),
+		'createddate' => array(
+			'label' => 'Created Date',
+			'type' => 'date',
+      'description' => 'The date the repository was created.',
+    ),
+    'updateddate' => array(
+      'label' => 'Updated Date',
+      'type' => 'date',
+      'description' => 'The last date the repository was updated.',
+    ),
+    'pusheddate' => array(
+      'label' => 'Pushed Date',
+      'type' => 'date',
+      'description' => 'The laste date the repository was pushed.',
+    ),
+    'forks' => array(
+      'label' => 'Forks',
+      'type' => 'integer',
+      'description' => 'The amount of forks for the repository.',
+    ),
+    'stargazers_count' => array(
+      'label' => 'Stargazers',
+      'type' => 'integer',
+      'description' => 'The amount of stargazers for the repository.',
+    ),
+    'watchers' => array(
+      'label' => 'Watchers',
+      'type' => 'integer',
+      'description' => 'The amount of watchers for the repository.',
+    ),
+    'size' => array(
+      'label' => 'Size',
+      'type' => 'integer',
+      'description' => 'The size of the repository.',
+    ),
+
+  );
+
+  // Return all of the defined property info.
+  return $properties;
+}
+
+/**
+ * Menu autoloader wildcard for path 'github.com/OWNER/NAME'.
+ *
+ * @param string $owner
+ *   The owner of the repository to load.
+ * @param string $name
+ *   The name of the repository to load.
+ *
+ * @see hook_menu()
+ *
+ * @return object
+ *   The loaded object, or FALSE on failure.
+ */
+function github_remote_repository_load($owner, $name) {
+  $remote_id = $owner . "/" . $name;
+  $return = remote_entity_load_by_remote_id('github_remote_repository', $remote_id);
+  return $return;
+}
+
+/**
+ * Page callback for path 'github.com/OWNER/NAME'.
+ *
+ * @param object $repository
+ *   The auto-loaded object.
+ *
+ * @return object
+ *   The themed output for the repository page.
+ */
+function github_remote_repository_view($repository) {
+  $full_name = $repository->entity_data->full_name;
+  drupal_set_title($full_name);
+  $repository_output = theme('github_remote_repository', array(
+    'repository' => $repository->entity_data,
+  ));
+  return $repository_output;
+}
+
+/**
+ * Implements hook_theme().
+ */
+function github_theme() {
+  return array(
+    'github_remote_repository' => array(
+      'variables' => array('repository' => NULL),
+      'template' => 'src/Theme/github',
+    ),
+  );
+}
+
+/****************************************************************************
+ ** Web Service Clients
+ ****************************************************************************/
+
+/**
+ * Implements hook_clients_connection_type_info().
+ */
+function github_clients_connection_type_info() {
+  return array(
+    'our_rest' => array(
+      'label'  => t('REST Data Services'),
+      'description' => t('Connects to our data service using REST endpoints.'),
+      'interfaces' => array(
+        'ClientsRemoteEntityInterface',
+      ),
+    ),
+  );
+}
+
+/**
+ * Implements hook_clients_default_connections().
+ */
+function github_clients_default_connections() {
+  $connections['my_rest_connection'] = new clients_connection_our_rest(array(
+    'endpoint' => 'https://api.github.com',
+    'configuration' => array(
+      'username' => '',
+      'password' => '',
+    ),
+    'label' => 'Github API v3',
+    'type' => 'our_rest',
+  ), 'clients_connection');
+
+  return $connections;
+}
+
+/**
+ * Implements hook_clients_default_resources().
+ */
+function github_clients_default_resources() {
+  $resources['github_remote_repository'] = new clients_resource_remote_entity(array(
+    'component' => 'github_remote_repository',
+    'connection' => 'my_rest_connection',
+    'label' => 'Resource for remote Github repository',
+    'type' => 'remote_entity',
+  ), 'clients_resource');
+
+  return $resources;
+}
+
+/**
+ * Return user access to allow entity reference to display entiites.
+ */
+function github_entity_callback($op, $entity = NULL, $account = NULL, $entity_type = '') {
+  return user_access($op, $account);
+}
+
+/**
+ * Implements hook_cron().
+ */
+function github_cron() {
+  // Put everything in a queue for processing.
+  $queue = DrupalQueue::get('github');
+  $queue->createItem(1);
+}
+
+/**
+ * Implements hook_cron_queue_info().
+ */
+function github_cron_queue_info() {
+  $queues['github'] = array(
+    'worker callback' => 'github_run',
+    // This is the callback function for each queue item.
+    'time' => 180,
+    // This is the max run time per cron run in seconds.
+  );
+  return $queues;
+}
+
+/**
+ * Worker Callback for the runner cron queue.
+ */
+function github_run($item) {
+  watchdog('github', 'Running github cron', array(), WATCHDOG_DEBUG);
+  $resource = clients_resource_get_for_component('remote_entity', 'github_remote_repository');
+  $query = $resource->getRemoteEntityQuery('select');
+  $query->base('github_remote_repository');
+  $result = $query->execute();
+
+  foreach ($result as $r) {
+	   try
+	   {
+	   	remote_entity_load_by_remote_id('github_remote_repository', $r->full_name); //TODO:don't reload but call correct caching function;
+	   }
+	   catch(Exception $e)
+		   {
+			  // print_r($e); //TODO:handle emojis
+	   }
+  }
+
+  }
+
+function github_feeds_plugins() {
+  $path = drupal_get_path('module', 'github') . '/src/Classes/';
+  $info = array();
+  $info['GithubFetcher'] = array(
+    'name'        => t('Github HTTP fetcher'),
+    'description' => t('Fetch Github repos.'),
+    'handler' => array(
+      'parent' => 'FeedsHTTPFetcher',
+      'class'  => 'GithubFetcher',
+      'file'   => 'GithubFetcher.php',
+      'path'   => $path,
+    ),
+  );
+  return $info;
+}

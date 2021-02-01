@@ -1,0 +1,30 @@
+<?php
+/**
+ * @file
+ * Tooltip API module.
+ */
+
+/**
+ * Add a tooltip to the current page.
+ *
+ * This is the main API entrypoint if you want to add page-specific
+ * tooltips.
+ *
+ * @param string $content
+ *   The textual content of the tooltip. This is not filtered for HTML,
+ *   so it is the caller's responsibilty to make sure the contents of
+ *   this is safe, as it will be added to the page as-is when the
+ *   tooltip is rendered.
+ * @param string $selector
+ *   CSS selector for where you'd like the tooltip to appear.
+ * @param array $options
+ *   Other options for the tooltip, overriding our default options.
+ *   TODO: Document these.
+ */
+function tooltip_add($content, $selector, $options) {
+  // Prepare a tip object for display and store it in Drupal's settings.
+  $tip = $options;
+  $tip['content'] = $content;
+  $tip['selector'] = $selector;
+  drupal_add_js(array('tooltip' => array($tip)), 'setting');
+}

@@ -1,0 +1,8 @@
+name = Github Contenttype
+description = Overwrite certain properties of the github projects entity.
+core = 7.x
+package = github
+
+files[] = github_contenttype.install
+dependencies[] = entityreference:entityreference
+dependencies[] = github

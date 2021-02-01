@@ -1,0 +1,338 @@
+<?php
+/**
+* @file
+* A description of what your module does.
+*/
+
+/**
+ * Implements hook_help().
+ *
+ * Displays help and module information.
+ */
+function github_contenttype_help($path, $arg) {
+  switch ($path) {
+    case "admin/help#github_contenttype":
+      return t("<h2>Showcase Github projects in Drupal.</h2>
+      <h3>Instructions</h3>
+      <p>Unpack in the <em>modules</em> folder (currently in the root of your Drupal 8 installation) and enable in <strong>/admin/modules</strong>.</p>
+      <p>Then, visit <strong>/admin/config/development/github_projects</strong> and configure your access token.</p>
+      <h3>Attention</h3>
+      <p>Most bugs have been ironed out, holes covered, features added. But this module is a work in progress. Please report bugs and suggestions.</p>
+      ");
+  }
+}
+
+function github_contenttype_preprocess_node(&$variables) {
+  //dpm($variables, "Variables");
+  $function = __FUNCTION__ . '_' . $variables['node']->type;
+  if (function_exists($function)) {
+    $function($variables);
+  }
+}
+
+function github_contenttype_entity_property_info_alter(&$info) {
+  // Extra property for food_collection containing the color terms of the child nodes.
+foreach(array('stargazers','watchers') as $p)
+{
+  $info['node']['bundles']['github_content']['properties'][$p] = array(
+    'label' => t($p),
+    'type' => 'integer',
+    'description' => t($p),
+    'getter callback' => 'github_contenttype_get_github_property', // Callback to a custom function.
+  );
+}
+//dpm($info,"info");
+return($info);
+}
+
+function github_contenttype_get_github_property($node, $options, $name, $entity_type) {
+	$metadata = entity_metadata_wrapper('node', $node);
+	return 42;	
+}
+
+function github_contenttype_preprocess_node_github_content(&$variables) {
+if (isset($variables['github_reference'][0]['entity']))
+{
+  $variables['name'] = !empty($variables['github_name'][2]['value']) ? $variables['github_name'][0]['value'] : $variables['github_reference'][0]['entity']->entity_data->repository_name;
+  $variables['readme'] = !empty($variables['github_readme'][0]['value']) ? $variables['github_readme'][0]['value'] : $variables['github_reference'][0]['entity']->entity_data->repository_readme;
+  $variables['url'] = $variables['github_reference'][0]['entity']->entity_data->repository_url;
+  $variables['license'] = $variables['github_reference'][0]['entity']->entity_data->repository_license;
+}
+}
+
+/**
+ * Implements hook_theme().
+ */
+function github_contenttype_theme($existing, $type, $theme, $path) {
+  $theme = array();
+  $theme['node__github_content'] = array(
+    'render element' => 'content',
+    'base hook' => 'node',
+    'template' => 'node--github',
+    'path' => drupal_get_path('module', 'github') . '/src/Theme',
+  );
+  return $theme;
+}
+
+/**
+ * Implement hook_form()
+ */
+function github_content_form($node, $form_state) {
+  return node_content_form($node, $form_state);
+}
+
+
+//function github_contenttype_form_github_content_node_form_alter(&$form, &$form_state, $form_id) {
+//  if($form_id == "github_content_node_form") {
+//    //drupal_set_message("Altering the Form");
+//    //$form[]
+//  }
+//}
+///* ATTACH AJAX CALLBACK */
+//function github_contenttype_field_widget_form_alter(&$element, &$form_state, $context) {
+//  $widget_type = $context['instance']['widget']['type'];
+//  //drupal_set_message("Altering the Widget + $widget_type");
+//  // Get path to where in the element to put the AJAX callback.
+//  $parents = _github_contenttype_supported_widgets($widget_type);
+//  //dpm($widget_type);
+//  if (is_array($parents)) {
+//
+//    // Other modules can disable ajax for fields at their own peril.
+//    $is_allowed = module_invoke_all('github_contenttype_detach_ajax', $context['field']['field_name'], $element, $context);
+//    // Skip field if (strict) FALSE is returned by any module.
+//    if (in_array(FALSE, $is_allowed, TRUE)) {
+//      return;
+//    }
+//
+//    $ajax_parent = &drupal_array_get_nested_value($element, $parents);
+//    // Add ajax callback to element.
+//    /*
+//    $ajax_parent['#ajax'] = array(
+//      'callback' => 'github_contenttype_form_autofill',
+//    );
+//    */
+//  }
+//  return;
+//}
+//
+//function github_contenttype_field_attach_form($entity_type, $entity, &$form, &$form_state, $langcode) {
+//  // Get info about current entity.
+//  list(, , $bundle) = entity_extract_ids($entity_type, $entity);
+//
+//  // Get array of fields that have enabled autofill.
+//  $autofill_settings = _github_contenttype_get_settings();
+//
+//  // No autofill references in this bundle.
+//  if (empty($autofill_settings[$entity_type][$bundle])) {
+//    return;
+//  }
+//
+//  // Load settings from form_state.
+//  $autofill_bundle_settings = $autofill_settings[$entity_type][$bundle];
+//
+//
+//  //drupal_set_message("Check for callback");
+//  // If an AJAX-call triggered this request,
+//  // use the triggering field's settings to autofill.
+//  $callback = isset($form_state['triggering_element']['#ajax']['callback']) ? $form_state['triggering_element']['#ajax']['callback'] : FALSE;
+//  if ($callback == 'github_contenttype_form_autofill') {
+//    //drupal_set_message("Callback exist");
+//  }
+//}
+//
+//
+///**
+// * AJAX callback for entity selection.
+// *
+// * @return array
+// *   Array of AJAX commands.
+// */
+//function github_contenttype_form_autofill($form, $form_state) {
+//  // Need entity type to continue.
+//  if (!isset($form_state['triggering_element']['#entity_type'])) {
+//    return;
+//  }
+//  $entity_type = $form_state['triggering_element']['#entity_type'];
+//  $bundle = isset($form_state['triggering_element']['#bundle']) ? $form_state['triggering_element']['#bundle'] : $entity_type;
+//
+//  //drupal_set_message($bundle + "Bundle");
+//
+//}
+
+/**
+ * Populate other form fields with respect to this module's field settings.
+ *
+ * @param int $referenced_target_id
+ *   id of referenced entity to fetch data from.
+ * @param string $reference_field_name
+ *   name of entity reference field triggering this call.
+ * @param string $langcode
+ *   current language.
+ * @param array $autofill_field_settings
+ *   module settings for $reference_field_name in current context.
+ * @param string $entity_type
+ *   the entity type of the referencing form.
+ * @param string $bundle
+ *   the bundle of the referencing form
+ * @param string $form
+ *   the $form array.
+ * @param string $form_state
+ *   the $form_state array.
+ */
+/*
+function github_contenttype_populate_form_by_field($referenced_target_id, $reference_field_name, $langcode, $autofill_field_settings, $entity_type, $bundle, &$form, &$form_state) {
+  // Entity reference field.
+  $reference_field = field_form_get_state($form['#parents'], $reference_field_name, LANGUAGE_NONE, $form_state);
+
+  // Reference entity metadata.
+  $referenced_entity_type = $reference_field['field']['settings']['target_type'];
+
+  // No value, quit processing.
+  if (!is_numeric($referenced_target_id)) {
+    return;
+  }
+
+  // Load referenced entity.
+  $referenced_entity = entity_load_single($referenced_entity_type, $referenced_target_id);
+
+  // Populate fields with values from referenced node.
+  $autofill_fields = $autofill_field_settings['fields'];
+  $overwrite = $autofill_field_settings['overwrite'];
+
+  // Empty current form_state for this bundle.
+  if (!isset($form_state['entityreference_autofill'][$entity_type][$bundle])) {
+    $form_state['entityreference_autofill'][$entity_type][$bundle] = array();
+  }
+
+  drupal_array_set_nested_value($form_state['entityreference_autofill'][$entity_type][$bundle], $form['#parents'], array());
+  $autofill_map = &drupal_array_get_nested_value($form_state['entityreference_autofill'][$entity_type][$bundle], $form['#parents']);
+
+  // Load relevant part of form's input array.
+  $form_input = &drupal_array_get_nested_value($form_state['input'], $form['#parents']);
+
+  foreach ($autofill_fields as $field_name) {
+    if (isset($form[$field_name])) {
+      // Language fail-safe for referenced entity.
+      // Use field language or undefined if empty.
+      // Makes referenced values sensitive to language
+      // selection in entity form.
+      // @see https://drupal.org/node/2205245
+      $referenced_language = isset($form_state['values']['language']) ? $form_state['values']['language'] : $langcode;
+      // Limit to allowed language(s) for this field, fallback to undefined.
+      $referenced_language = field_language($referenced_entity_type, $referenced_entity, $field_name, $referenced_language);
+      if (empty($referenced_language)) {
+        $referenced_language = LANGUAGE_NONE;
+      }
+
+      // Get current field's language.
+      $field_language = $form[$field_name]['#language'];
+
+      // Consider overwrite setting.
+      if (!$overwrite) {
+        if (_entityreference_autofill_field_has_value($form_input[$field_name][$field_language], $field_name)) {
+          continue;
+        }
+      }
+      // Load new value.
+      $items = field_get_items($referenced_entity_type, $referenced_entity, $field_name, $referenced_language);
+      if (!empty($items)) {
+        // Add callback info if AJAX.
+        $autofill_map[$field_name] = _entityreference_autofill_get_wrapper($entity_type, $bundle, $field_name, $form['#parents']);
+
+        // Field information for rendering form.
+        $field = field_info_field($field_name);
+        $instance = field_info_instance($entity_type, $field_name, $bundle);
+
+        // Let other modules interact with $form_state prior to
+        // generating this field's form.
+        // @see entityreference_autofill.api.php
+        $context = array(
+          'field' => $field,
+          'instance' => $instance,
+          'items' => $items,
+          'langcode' => $referenced_language,
+          'reference_field_name' => $reference_field_name,
+        );
+        drupal_alter('entityreference_autofill_fill_items', $form_state, $context);
+
+        // Replace field state with referenced values.
+        // This is needed for multi-value fields with different
+        // cardinality in source and destination.
+        $field_state = field_form_get_state($form['#parents'], $field_name, $field_language, $form_state);
+        $field_state['items_count'] = count($items);
+        field_form_set_state($form['#parents'], $field_name, $field_language, $form_state, $field_state);
+
+        // Replace field with new defaults.
+        // @todo $referenced_language or $field_language here?
+        // Implications if they differ?
+        $field_form = field_default_form($referenced_entity_type, $referenced_entity, $field, $instance, $referenced_language, $items, $form, $form_state);
+        $form[$field_name] = reset($field_form);
+
+        // Unset current input to use new default values in form.
+        unset($form_input[$field_name]);
+      }
+    }
+  }
+}
+*/
+//function _github_contenttype_supported_widgets($widget_type = FALSE) {
+//  $supported_widgets = array(
+//    'entityreference_autocomplete' => array('target_id'),
+//    'options_select' => array(),
+//    'options_buttons' => array(),
+//  );
+//
+//  // Allow other modules to add other widgets support.
+//  $additional_widgets = module_invoke_all('github_contenttype_supported_widgets');
+//  $supported_widgets += $additional_widgets;
+//
+//  if ($widget_type) {
+//    return isset($supported_widgets[$widget_type]) ? $supported_widgets[$widget_type] : FALSE;
+//  }
+//  return $supported_widgets;
+//}
+//
+//function _github_contenttype_get_settings($reset = FALSE) {
+//  // Use cached if available
+//  // (Static is superfluous for now).
+//  $settings = &drupal_static(__FUNCTION__);
+//  if (!isset($settings) && !$reset) {
+//    $cache = cache_get(__FUNCTION__);
+//    if (!empty($cache->data)) {
+//      $settings = $cache->data;
+//    }
+//  }
+//  // Rebuild settings.
+//  if (!isset($settings) || $reset) {
+//    $field_map = field_info_field_map();
+//    $enabled_fields = array();
+//    foreach ($field_map as $field_name => $field) {
+//      if ($field['type'] !== 'entityreference') {
+//        continue;
+//      }
+//      foreach ($field['bundles'] as $entity_type => $bundles) {
+//        foreach ($bundles as $bundle) {
+//          $field_info = field_info_instance($entity_type, $field_name, $bundle);
+//          if (isset($field_info['settings']['behaviors']['autofill'])) {
+//            $module_settings = $field_info['settings']['behaviors']['autofill'];
+//            if ($module_settings['status']) {
+//              // Clear unused fields from field array.
+//              $module_settings['fields'] = array_filter($module_settings['fields']);
+//              $enabled_fields[$entity_type][$bundle][$field_name] = $module_settings;
+//              // Reduntant, module is enabled if key exists.
+//              unset($module_settings['status']);
+//              // Entityreference prepopulate is enabled.
+//              if (!empty($field_info['settings']['behaviors']['prepopulate']['status'])) {
+//                $enabled_fields[$entity_type][$bundle][$field_name]['prepopulate'] = TRUE;
+//              }
+//            }
+//          }
+//        }
+//      }
+//    }
+//    cache_set(__FUNCTION__, $enabled_fields);
+//    $settings = $enabled_fields;
+//  }
+//  return $settings;
+//}
+

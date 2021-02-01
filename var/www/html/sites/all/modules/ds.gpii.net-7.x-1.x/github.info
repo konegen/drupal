@@ -1,0 +1,15 @@
+name = Github
+description = Integrate Github Repositories into Drupal as content.
+core = 7.x
+package = github
+
+dependencies[] = remote_entity:remote_entity
+dependencies[] = efq_views:efq_views
+dependencies[] = clients:clients
+dependencies[] = feeds 
+
+configure = admin/config/development/github
+files[] = src/Classes/GithubConnection.class.php
+files[] = src/Classes/GithubRemoteSelectQuery.class.php
+files[] = src/Classes/GithubRepository.class.php
+files[] = src/Classes/GithubFetcher.php

@@ -1,0 +1,13 @@
+name = Tooltip API
+description = Simple module, helping other modules add tooltips to the page via hook_tooltip().
+core = 7.x
+
+; Add our JavaScript to every page.
+scripts[] = js/tooltip.module.js
+
+; Information added by drupal.org packaging script on 2013-03-08
+version = "7.x-1.0-alpha2"
+core = "7.x"
+project = "tooltip"
+datestamp = "1362783900"
+

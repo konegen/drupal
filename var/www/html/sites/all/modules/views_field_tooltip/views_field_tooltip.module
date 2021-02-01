@@ -1,0 +1,1164 @@
+<?php
+
+/**
+ * @file
+ * Shows tooltips on Views fields and labels.
+ */
+
+/**
+ * Implements hook_views_api().
+ */
+function views_field_tooltip_views_api() {
+  return array(
+    'api' => 3,
+  );
+}
+
+/**
+ * Implements hook_menu().
+ */
+function views_field_tooltip_menu() {
+  $base = array(
+    'access callback' => 'user_access',
+    'access arguments' => array('administer views'),
+  );
+  $items['admin/structure/views/settings/tooltips'] = array(
+    'title' => 'Tooltips',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('views_field_tooltip_admin_settings_tooltips'),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 2,
+  ) + $base;
+  return $items;
+}
+
+/**
+ * Form function for `admin/structure/views/settings/tooltips`.
+ */
+function views_field_tooltip_admin_settings_tooltips($form, &$form_state) {
+  module_load_include('inc', 'views_ui', 'includes/admin');
+  ctools_include('dependent');
+
+  $form['#attached']['css'] = views_ui_get_admin_css();
+
+  $library = variable_get('views_field_tooltip_library', 'qtip2');
+  $info = views_field_tooltip_get_library_info();
+  $libraries = array();
+  $path_dependency = array();
+  foreach ($info as $key => $l) {
+    $libraries[$key] = $l['name'];
+    if (!empty($l['needs local file'])) {
+      $path_dependency[] = $key;
+    }
+  }
+  $form['views_field_tooltip_library'] = array(
+    '#type' => 'select',
+    '#title' => t('Tooltip library'),
+    '#options' => $libraries,
+    '#default_value' => $library,
+    '#description' => t('Select the library to be used to display tooltips.'),
+  );
+  $path = variable_get('views_field_tooltip_library_path', '');
+  $form['views_field_tooltip_library_path'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Tooltip library path'),
+    '#default_value' => $path,
+    '#description' => t('The relative or full path to the JavaScript file containing the tooltip library specified above.'),
+    '#process' => array('ctools_dependent_process'),
+    '#dependency' => array('edit-views-field-tooltip-library' => $path_dependency),
+  );
+
+  return system_settings_form($form);
+}
+
+/**
+ * Validation function for form `views_field_tooltip_admin_settings_tooltips`.
+ */
+function views_field_tooltip_admin_settings_tooltips_validate(&$form, &$form_state) {
+  $path = $form_state['values']['views_field_tooltip_library_path'];
+  $library = $form_state['values']['views_field_tooltip_library'];
+  $info = views_field_tooltip_get_library_info();
+  if (!empty($info[$library]['needs local file']) && !file_exists($path)) {
+    form_set_error('views_field_tooltip_library_path', t('Tooltip library %library not found at %path.', array(
+      '%library' => $info[$library]['name'],
+      '%path' => empty($path) ? t('[empty path]') : $path,
+    )));
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter() for `views_ui_config_item_form`.
+ */
+function views_field_tooltip_form_views_ui_config_item_form_alter(&$form, &$form_state) {
+  if ($form_state['type'] != 'field') {
+    return;
+  }
+
+  $field_id = $form_state['id'];
+  $tooltips = $form_state['tooltips'] = views_field_tooltip__get_option($form_state['view']);
+  if (!isset($tooltips)) {
+    $tooltips = array();
+  }
+  $tooltips += array($field_id => array());
+  $tooltips[$field_id] += array(
+    'field_tooltip' => array(),
+    'label_tooltip' => array(),
+    'label2_tooltip' => array(),
+  );
+  $info = views_field_tooltip_get_library_info(variable_get('views_field_tooltip_library', 'qtip2'));
+
+  // Field tooltip widget.
+  views_field_tooltip__insert_widget(
+    $form,
+    t('Field tooltip settings'),
+    'field',
+    $form['options']['style_settings']['#weight'] - 1,
+    $tooltips[$field_id]['field_tooltip'],
+    $info,
+    $form_state['handler']
+  );
+
+  // Label tooltip widget.
+  if (!empty($tooltips[$field_id]) && is_string($tooltips[$field_id])) {
+    $label_tooltip_text = $tooltips[$field_id];
+    $tooltips[$field_id] = array();
+    $tooltips[$field_id]['label_tooltip']['text'] = $label_tooltip_text;
+  }
+  views_field_tooltip__insert_widget(
+    $form,
+    t('Label tooltip #1 settings'),
+    'label',
+    $form['options']['element_label_colon']['#weight'] + 1,
+    $tooltips[$field_id]['label_tooltip'],
+    $info,
+    $form_state['handler'],
+    TRUE
+  );
+  $form['options']['label_tooltip_settings'] += array(
+    '#attributes' => array(
+      'class' => array('dependent-options'),
+    ),
+    '#dependency' => $form['options']['element_label_colon']['#dependency'],
+  );
+
+  // Label tooltip widget #2.
+  views_field_tooltip__insert_widget(
+    $form,
+    t('Label tooltip #2 settings'),
+    'label2',
+    $form['options']['label_tooltip_settings']['#weight'] + 1,
+    $tooltips[$field_id]['label2_tooltip'],
+    $info,
+    $form_state['handler'],
+    TRUE
+  );
+  $form['options']['label2_tooltip_settings'] += array(
+    '#attributes' => array(
+      'class' => array('dependent-options'),
+    ),
+    '#dependency' => $form['options']['element_label_colon']['#dependency'],
+  );
+
+  // Make way for our items.
+  $form['options']['exclude']['#weight'] = $form['options']['label2_tooltip_settings']['#weight'] + 1;
+
+  $form['buttons']['submit']['#validate'][] = 'views_field_tooltip_form_views_ui_config_item_form_validate';
+  $form['buttons']['submit']['#submit'][] = 'views_field_tooltip_form_views_ui_config_item_form_submit';
+}
+
+/**
+ * Insert tooltip widget into a form.
+ */
+function views_field_tooltip__insert_widget(&$form, $title, $prefix, $weight, $tooltip, $info, $handler, $label = FALSE) {
+  $fieldset = "{$prefix}_tooltip_settings";
+  $form['options'][$fieldset] = array(
+    '#type' => 'fieldset',
+    '#title' => $title,
+    '#weight' => $weight,
+    '#collapsible' => TRUE,
+    '#collapsed' => empty($tooltip['text']) && empty($tooltip['url']),
+  );
+  $form['options']["{$prefix}_tooltip_ajax"] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Load from URL (dynamic content)'),
+    '#description' => t('
+      Check this box to specify a URL that will return the HTML tooltip.
+      Otherwise, you can enter the tooltip text directly below.
+    '),
+    '#fieldset' => $fieldset,
+    '#default_value' => @$tooltip['ajax'],
+  );
+  $form['options']["{$prefix}_tooltip_ajax_mode"] = array(
+    '#type' => 'radios',
+    '#title' => t('URL retrieval mode'),
+    '#options' => array(
+      0 => t('iFrame (include nested HTML page)'),
+      1 => t('AJAX (include only page contents)'),
+    ),
+    0 => array(
+      '#description' => t('An <a href="https://en.wikipedia.org/wiki/Framing_(World_Wide_Web)">iFrame</a> will be included, displaying the specified URL as a separate document (including styles and scripts).'),
+    ),
+    1 => array(
+      '#description' => t('Use <a href="https://en.wikipedia.org/wiki/Ajax_(programming)">AJAX</a> to retrieve only the body HTML contents of the given URL and include them directly in the tooltip, as if they were given as the tooltip text.'),
+    ),
+    '#fieldset' => $fieldset,
+    '#default_value' => empty($tooltip['ajax_mode']) ? 0 : 1,
+    '#states' => array(
+      'visible' => array(
+        ":input[name=\"options[{$prefix}_tooltip_ajax]\"]" => array(
+          'checked' => TRUE,
+        ),
+      ),
+    ),
+  );
+  $form['options']["{$prefix}_tooltip_url"] = array(
+    '#type' => 'textfield',
+    '#title' => t('Tooltip URL'),
+    '#description' => t('Local or external URL of an HTML snippet tooltip. You may enter data from this view as per the "Replacement patterns" below. (External URLs might not work without special configuration on the external server, like <a href="https://en.wikipedia.org/wiki/Clickjacking#X-Frame-Options">X-Frame-Options</a> or <a href="https://en.wikipedia.org/wiki/Same-origin_policy#Cross-Origin_Resource_Sharing">Access-Control-Allow-Origin</a> headers.)'),
+    '#fieldset' => $fieldset,
+    '#dependency' => array(
+      "edit-options-{$prefix}-tooltip-ajax" => array(1),
+    ),
+    '#attributes' => array(
+      'class' => array('dependent-options'),
+    ),
+    '#default_value' => @$tooltip['url'],
+  );
+  $form['options']["{$prefix}_tooltip_text"] = array(
+    '#type' => 'textarea',
+    '#title' => t('Tooltip text'),
+    '#description' => t('The text to display for this tooltip. You may include HTML. You may enter data from this view as per the "Replacement patterns" below.'),
+    '#fieldset' => $fieldset,
+    '#dependency' => array(
+      "edit-options-{$prefix}-tooltip-ajax" => array(0),
+    ),
+    '#attributes' => array(
+      'class' => array('dependent-options'),
+    ),
+    '#default_value' => @$tooltip['text'],
+  );
+  $form['options']["{$prefix}_tooltip_icon"] = array(
+    '#type' => 'textfield',
+    '#title' => t('Tooltip icon URL'),
+    '#description' => t('Local or external URL of an image used to trigger the tooltip. You may enter data from this view as per the "Replacement patterns" below.'),
+    '#fieldset' => $fieldset,
+    '#default_value' => @$tooltip['icon'],
+  );
+  $form['options']["{$prefix}_tooltip_replacement_patterns"] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Replacement patterns'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+    '#value' => views_field_tooltip__get_replacement_help($handler, $label),
+    '#fieldset' => $fieldset,
+  );
+  if (!empty($info)) {
+    $form['options']["{$prefix}_tooltip_qtip"] = array(
+      '#type' => 'textarea',
+      '#title' => t('Tooltip style'),
+      '#description' => t('Override global tooltip style settings for this field.'),
+      '#fieldset' => $fieldset,
+      '#default_value' => jsonpp(@$tooltip['qtip']),
+    );
+  }
+  else {
+    $form['options']["{$prefix}_tooltip_qtip"] = array(
+      '#type' => 'value',
+      '#value' => jsonpp(@$tooltip['qtip']),
+    );
+  }
+}
+
+/**
+ * Validate function for `views_ui_config_item_form`.
+ */
+function views_field_tooltip_form_views_ui_config_item_form_validate($form, &$form_state) {
+  // Validate tooltip settings.
+  foreach (array('field', 'label', 'label2') as $prefix) {
+    if (!empty($form_state['values']['options']["{$prefix}_tooltip_qtip"])) {
+      json_decode($form_state['values']['options']["{$prefix}_tooltip_qtip"], TRUE);
+      if (json_last_error() != JSON_ERROR_NONE) {
+        form_set_error("options][{$prefix}_tooltip_qtip", t(json_last_error_msg()));
+      }
+    }
+  }
+
+  // Need this to ensure form remains displayed to show error.
+  if (form_get_errors()) {
+    $form_state['rerender'] = TRUE;
+  }
+}
+
+/**
+ * Submit function for `views_ui_config_item_form`.
+ */
+function views_field_tooltip_form_views_ui_config_item_form_submit($form, &$form_state) {
+  $tooltips = $form_state['tooltips'];
+  $field_id = $form_state['id'];
+  // Left-over from previous version.
+  if (is_string($tooltips[$field_id])) {
+    unset($tooltips[$field_id]);
+  }
+
+  // Select the target display: default or overridden?
+  $display_id = isset($form_state['values']['override']['dropdown']) ? $form_state['values']['override']['dropdown'] : 'default';
+  $form_state['view']->set_display($display_id);
+
+  // Save tooltip settings.
+  foreach (array('field', 'label', 'label2') as $prefix) {
+    $form_state['values']['options']["{$prefix}_tooltip_qtip"] = json_decode($form_state['values']['options']["{$prefix}_tooltip_qtip"], TRUE);
+    foreach (array(
+      "{$prefix}_tooltip_ajax"      => array("{$prefix}_tooltip", 'ajax'),
+      "{$prefix}_tooltip_ajax_mode" => array("{$prefix}_tooltip", 'ajax_mode'),
+      "{$prefix}_tooltip_text"      => array("{$prefix}_tooltip", 'text'),
+      "{$prefix}_tooltip_url"       => array("{$prefix}_tooltip", 'url'),
+      "{$prefix}_tooltip_qtip"      => array("{$prefix}_tooltip", 'qtip'),
+      "{$prefix}_tooltip_icon"      => array("{$prefix}_tooltip", 'icon'),
+    ) as $option => $path) {
+      if (!empty($form_state['values']['options'][$option])) {
+        $tooltips[$field_id][$path[0]][$path[1]] = $form_state['values']['options'][$option];
+      }
+      else {
+        unset($tooltips[$field_id][$path[0]][$path[1]]);
+      }
+    }
+  }
+
+  // Save the updated tooltip options to our display extender.
+  $form_state['view']->display_handler->set_option('tooltips', $tooltips);
+
+  // Write to cache.
+  views_ui_cache_set($form_state['view']);
+}
+
+/**
+ * Implements hook_views_pre_render().
+ */
+function views_field_tooltip_views_pre_render(&$view) {
+  $tooltips = views_field_tooltip__get_option($view);
+  if (empty($tooltips)) {
+    return;
+  }
+
+  // Adjust style plugin row class for our purposes.
+  $row_class = &$view->style_plugin->options['row_class'];
+  if (!empty($row_class)) {
+    $row_class .= ' ';
+  }
+  $row_class .= 'views-field-tooltip-row';
+
+  // Theme field and label tooltips.
+  $fields = array();
+  $labels = array();
+  foreach ($tooltips as $field_id => $tooltip) {
+    if (empty($view->field[$field_id])) {
+      continue;
+    }
+
+    // CSS-friendly identifier.
+    $field_css = drupal_clean_css_identifier($field_id);
+
+    // Left-over from previous version that only had label tooltips.
+    if (is_string($tooltip)) {
+      $tooltip = array('label_tooltip' => array('text' => $tooltip));
+    }
+
+    // Send themed label tooltip #1 if present.
+    if (!empty($tooltip['label_tooltip'])) {
+      views_field_tooltip__inject_tooltip(
+        $view,
+        $field_id,
+        $field_css,
+        count($view->result) ? 0 : NULL,
+        'label',
+        $tooltip['label_tooltip'],
+        $labels[$field_css]['label'],
+        $view->field[$field_id]->options['element_label_class']
+      );
+    }
+
+    // Send themed label tooltip #2 if present.
+    if (!empty($tooltip['label2_tooltip'])) {
+      views_field_tooltip__inject_tooltip(
+        $view,
+        $field_id,
+        $field_css,
+        count($view->result) ? 0 : NULL,
+        'label2',
+        $tooltip['label2_tooltip'],
+        $labels[$field_css]['label2'],
+        $view->field[$field_id]->options['element_label_class']
+      );
+    }
+
+    // Send themed field tooltips for each row if present.
+    if (!empty($tooltip['field_tooltip'])) {
+      views_field_tooltip__inject_field_tooltip(
+        $view,
+        $field_id,
+        $field_css,
+        $tooltip['field_tooltip'],
+        $fields
+      );
+    }
+  }
+
+  // Allow other modules to tweak the tooltips.
+  $data = (object) array(
+    'view' => $view,
+    'tooltips' => $tooltips,
+    'labels' => &$labels,
+    'fields' => &$fields,
+  );
+  drupal_alter('views_field_tooltip_pre_render', $data);
+
+  // Bail early if nothing to do.
+  $labels = array_filter_recursive($labels);
+  $fields = array_filter_recursive($fields);
+  if (empty($labels) && empty($fields)) {
+    return;
+  }
+
+  // Choose tooltip library.
+  $library = variable_get('views_field_tooltip_library', 'qtip2');
+  $info = views_field_tooltip_get_library_info($library);
+  if (empty($info)) {
+    drupal_set_message(t('Unknown tooltip library %library. Please make sure <a href="@url">to select an existing library</a>.', array(
+      '%library' => $library,
+      '@url' => url('admin/structure/views/settings/tooltips'),
+    )), 'error');
+    return;
+  }
+  if (!empty($info['needs local file'])) {
+    $library_path = variable_get('views_field_tooltip_library_path', '');
+    if (!file_exists($library_path)) {
+      drupal_set_message(t('Tooltip library %library not found at %path. Please make sure <a href="@url">the path is valid</a>.', array(
+        '%library' => $info['name'],
+        '%path' => empty($library_path) ? t('[empty path]') : $library_path,
+        '@url' => url('admin/structure/views/settings/tooltips'),
+      )), 'error');
+      return;
+    }
+    drupal_add_js($library_path);
+  }
+  if (!empty($info['attached']['js'])) {
+    foreach ($info['attached']['js'] as $data => $options) {
+      drupal_add_js($data, $options);
+    }
+  }
+  if (!empty($info['attached']['css'])) {
+    foreach ($info['attached']['css'] as $data => $options) {
+      drupal_add_css($data, $options);
+    }
+  }
+
+  // Add our core files and settings.
+  drupal_add_js(drupal_get_path('module', 'views_field_tooltip') . '/js/views_field_tooltip.js');
+  drupal_add_js(array(
+    'viewsFieldTooltip' => array(
+      $view->name => array(
+        $view->current_display => array(
+          'labels' => $labels,
+          'fields' => $fields,
+          'style' => get_class($view->style_plugin),
+          'style_type' => views_field_tooltip__get_style_type($view->style_plugin),
+        ),
+      ),
+    ),
+  ), 'setting');
+}
+
+/**
+ * Implements `hook_views_field_tooltip_pre_render_alter` on behalf of views_matrix.module.
+ */
+function views_matrix_views_field_tooltip_pre_render_alter($data) {
+  if ($data->view->style_plugin instanceof views_matrix_plugin_style_matrix) {
+    $xfield = $data->view->style_plugin->options['xconfig']['field'];
+    if (!empty($data->tooltips[$xfield]['field_tooltip'])) {
+      $xfield_css = drupal_clean_css_identifier($xfield);
+      $data->view->style_plugin->options['xconfig']['class'] .= " views-field-tooltip-field-{$xfield_css} views-field-tooltip-row-[#]";
+    }
+    $yfield = $data->view->style_plugin->options['yconfig']['field'];
+    if (!empty($data->tooltips[$yfield]['field_tooltip'])) {
+      $yfield_css = drupal_clean_css_identifier($yfield);
+      $data->view->style_plugin->options['yconfig']['class'] .= " views-field-tooltip-field-{$yfield_css} views-field-tooltip-row-[#]";
+    }
+  }
+}
+
+/**
+ * Determines the type of style plugin.
+ *
+ * @param views_plugin_style $style_plugin
+ *   The style plugin.
+ *
+ * @return string
+ *   "matrix", "flipped_table" or "table", determined by the class hierarchy of
+ *   the given plugin.
+ */
+function views_field_tooltip__get_style_type($style_plugin) {
+  if ($style_plugin instanceof views_matrix_plugin_style_matrix) {
+    return 'matrix';
+  }
+  if ($style_plugin instanceof views_flipped_table_plugin_style_flipped_table) {
+    return 'flipped_table';
+  }
+  return 'table';
+}
+
+/**
+ * Inject settings for a tooltip.
+ */
+function views_field_tooltip__inject_tooltip($view, $field_id, $field_css, $row_index, $prefix, $tooltip, &$output, &$class) {
+  // Return if nothing to do.
+  if ((!empty($tooltip['ajax']) && empty($tooltip['url']))
+      || (empty($tooltip['ajax']) && empty($tooltip['text']))) {
+    return;
+  }
+
+  // The style settings are set to the default ones and overridden with the custom ones, if present.
+  $default = (array) $view->display_handler->get_option($prefix);
+  if (empty($default) && $prefix == 'field') {
+    $default = (array) $view->display_handler->get_option('qtip');
+  }
+  $qtip = array_replace_recursive($default, (array) @$tooltip['qtip']);
+
+  // Expand tokens for this field.
+  $tokens = views_field_tooltip__get_render_tokens($field_id, $view, $row_index);
+  if (empty($tooltip['ajax'])) {
+    $text = t($tooltip['text']);
+    $qtip['content'] = strtr($text, $tokens);
+    if (!trim($qtip['content'])) {
+      return;
+    }
+  }
+  else {
+    $url = views_field_tooltip__get_tooltip_url($tooltip['url'], $tokens);
+    if (empty($tooltip['ajax_mode'])) {
+      $url = check_plain($url);
+      $qtip['content'] = <<<EOS
+        <iframe src="{$url}" width="100%" height="100%" seamless="seamless" frameborder="0" />
+EOS;
+    }
+    else {
+      $url .= '&true_ajax=1';
+      $qtip['content']['url'] = $url;
+    }
+  }
+  $icon = @$tooltip['icon'];
+  $icon = strtr($icon, $tokens);
+
+  // Generate output.
+  $output = array(
+    'theme' => theme('views_field_tooltip', array(
+      'view' => $view,
+      'field' => $field_id,
+      'icon' => $icon,
+      'class' => array("views-{$prefix}-tooltip-icon"),
+    )),
+    'qtip' => $qtip,
+  );
+
+  // Update target class.
+  $class = views_field_tooltip__update_class($class, array(
+    "views-{$prefix}-tooltip",
+    "views-{$prefix}-tooltip-field-{$field_css}",
+    // This is a special token added by our module.
+    is_null($row_index) ? '' : "views-{$prefix}-tooltip-row-[#]",
+  ));
+}
+
+/**
+ * Inject settings for a field tooltip.
+ *
+ * @param view $view
+ *   The view being processed.
+ * @param string $field_id
+ *   The field's ID.
+ * @param string $field_css
+ *   The field's CSS-sanitized ID.
+ * @param array $tooltip
+ *   The tooltip's settings.
+ * @param array $fields
+ *   The array to which the Javascript settings for the field tooltip should be
+ *   written, passed by reference.
+ */
+function views_field_tooltip__inject_field_tooltip($view, $field_id, $field_css, $tooltip, &$fields) {
+  // First, find out which tokens are present in the tooltip's settings so we
+  // can determine whether we can take a shortcut or need to pass the tooltip
+  // once for every row.
+  $settings_content = empty($tooltip['ajax']) ? t($tooltip['text']) : $tooltip['url'];
+  if (isset($tooltip['icon'])) {
+    $settings_content .= $tooltip['icon'];
+  }
+  $contained_tokens = array();
+  foreach (views_field_tooltip__get_render_tokens($field_id, $view, 0) as $token => $replacement) {
+    if (strpos($settings_content, $token) !== FALSE) {
+      $contained_tokens[$token] = $token;
+    }
+  }
+
+  // Two kinds of token can easily be emulated by Javascript: the token of the
+  // current field itself (emulated by `$(this).html()`), and our special "[#]"
+  // row index token (can be constructed from the row class).
+  $self_token = "[$field_id]";
+  $has_self = isset($contained_tokens[$self_token]) ? $self_token : FALSE;
+  unset($contained_tokens[$self_token]);
+  $row_token = '[#]';
+  $has_row_token = isset($contained_tokens[$row_token]) ? $row_token : FALSE;
+  unset($contained_tokens[$row_token]);
+
+  // If there were no other tokens (or none at all), we only need to pass the
+  // settings once.
+  $class = &$view->field[$field_id]->options['element_class'];
+  if (!$contained_tokens) {
+    // The style settings are set to the default ones and overridden with the
+    // custom ones, if present.
+    $qtip = (array) $view->display_handler->get_option('field');
+    if (empty($qtip)) {
+      $qtip = (array) $view->display_handler->get_option('qtip');
+    }
+    if (isset($tooltip['qtip']) && is_array($tooltip['qtip'])) {
+      $qtip = array_replace_recursive($qtip, $tooltip['qtip']);
+    }
+    if (empty($tooltip['ajax'])) {
+      $qtip['content'] = t($tooltip['text']);
+    }
+    else {
+      $url = views_field_tooltip__get_tooltip_url($tooltip['url'], array());
+      if (empty($tooltip['ajax_mode'])) {
+        $url = check_plain($url);
+        $qtip['content'] = <<<EOS
+      <iframe src="{$url}" width="100%" height="100%" seamless="seamless" frameborder="0" />
+EOS;
+      }
+      else {
+        $url .= '&true_ajax=1';
+        $qtip['content']['url'] = $url;
+      }
+    }
+    $fields[$field_css] = array(
+      'single_setting' => TRUE,
+      'self_token' => $has_self,
+      'row_token' => $has_row_token,
+      'theme' => theme('views_field_tooltip', array(
+        'view' => $view,
+        'field' => $field_id,
+        'icon' => isset($tooltip['icon']) ? $tooltip['icon'] : NULL,
+        'class' => array('views-field-tooltip-icon'),
+      )),
+      'qtip' => $qtip,
+    );
+
+    // Update target class.
+    $class = views_field_tooltip__update_class($class, array(
+      'views-field-tooltip',
+      "views-field-tooltip-field-{$field_css}",
+      // This is a special token added by our module.
+      'views-field-tooltip-row-[#]',
+    ));
+  }
+  else {
+    foreach ($view->style_plugin->render_fields($view->result) as $row_index => $row) {
+      views_field_tooltip__inject_tooltip(
+        $view,
+        $field_id,
+        $field_css,
+        $row_index,
+        'field',
+        $tooltip,
+        $fields[$field_css][$row_index],
+        $class
+      );
+    }
+  }
+}
+
+/**
+ * Update class string with new array of classes, making sure no duplicates are added.
+ */
+function views_field_tooltip__update_class($class, $new_classes) {
+  $classes = explode(' ', $class);
+  $classes = array_merge($classes, array_filter($new_classes));
+  return trim(implode(' ', array_unique($classes)));
+}
+
+/**
+ * Generate a tooltip URL.
+ */
+function views_field_tooltip__get_tooltip_url($url, $tokens) {
+  // Remove own base path.
+  global $base_url;
+  $url = str_replace($base_url . '/', '', $url);
+  // Replace tokens.
+  $url = strtr($url, $tokens);
+  // Parse URL to detect local paths.
+  $parse_info = parse_url($url);
+  if (!empty($parse_info['path']) && empty($parse_info['scheme']) && empty($parse_info['host'])) {
+    // Local path: add the 'ajax' query parameter to render the raw Drupal page.
+    parse_str(@$parse_info['query'], $query);
+    $query['ajax'] = 1;
+    $url = url($parse_info['path'], array('query' => $query));
+  }
+  return $url;
+}
+
+/**
+ * Set the right cached value for token replacement.
+ */
+function views_field_tooltip__get_render_tokens($field_id, $view, $row_index) {
+  if (!is_null($row_index)) {
+    $rendered_fields = $view->style_plugin->render_fields($view->result);
+    foreach ($view->field as $field_id => $field) {
+      if (isset($rendered_fields[$row_index][$field_id])) {
+        $field->last_render = $rendered_fields[$row_index][$field_id];
+      }
+    }
+  }
+  $view->row_index = $row_index;
+  $tokens = $view->field[$field_id]->get_render_tokens(NULL);
+  // Add our own special "row number" token and insert it everywhere.
+  if (!is_null($row_index)) {
+    $tokens['[#]'] =
+    $view->style_plugin->render_tokens[$row_index]['[#]'] =
+    $view->field[$field_id]->last_tokens['[#]'] = $row_index;
+  }
+  return $tokens;
+}
+
+/**
+ * Implements hook_theme().
+ */
+function views_field_tooltip_theme() {
+  return array(
+    'views_field_tooltip' => array(
+      'variables' => array(
+        'view' => NULL,
+        'field' => NULL,
+        'class' => array(),
+        'icon' => NULL,
+      ),
+    ),
+  );
+}
+
+/**
+ * Theme function for `views_field_tooltip`.
+ */
+function theme_views_field_tooltip(&$variables) {
+  $icon = empty($variables['icon']) ? drupal_get_path('module', 'views_field_tooltip') . '/images/help.png' : $variables['icon'];
+  $attributes = array(
+    'class' => $variables['class'],
+  );
+  return theme('image', array(
+    'path' => $icon,
+    'attributes' => $attributes,
+  ));
+}
+
+/**
+ * Helper function to get tooltips setting.
+ */
+function views_field_tooltip__get_option($view) {
+  if (isset($view->display_handler->display->display_options['fields'])) {
+    // Fields are overridden: use this display's tooltips.
+    $tooltips = @$view->display_handler->display->display_options['tooltips'];
+  }
+  else {
+    // Fields are default: use default display's tooltips.
+    $tooltips = @$view->display['default']->display_options['tooltips'];
+  }
+  return $tooltips;
+}
+
+/**
+ * Implements hook_theme_registry_alter().
+ */
+function views_field_tooltip_theme_registry_alter(&$theme_registry) {
+  $theme_path = drupal_get_path('module', 'views_field_tooltip') . '/theme';
+
+  // Add 'html--ajax.tpl.php' template file.
+  $theme_registry['html__ajax'] = array();
+  $theme_registry['html__ajax']['template'] = 'html--ajax';
+  $theme_registry['html__ajax']['path'] = $theme_path;
+  $theme_registry['html__ajax']['render element'] = 'page';
+  $theme_registry['html__ajax']['base hook'] = 'html';
+  $theme_registry['html__ajax']['type'] = 'theme_engine';
+  $theme_registry['html__ajax']['theme path'] = path_to_theme();
+  $theme_registry['html__ajax']['preprocess functions'] = array();
+  $theme_registry['html__ajax']['process functions'] = array();
+
+  //Add 'html--true-ajax.tpl.php' template file.
+  $theme_registry['html__true_ajax'] = array();
+  $theme_registry['html__true_ajax']['template'] = 'html--true-ajax';
+  $theme_registry['html__true_ajax']['path'] = $theme_path;
+  $theme_registry['html__true_ajax']['render element'] = 'page';
+  $theme_registry['html__true_ajax']['base hook'] = 'html';
+  $theme_registry['html__true_ajax']['type'] = 'theme_engine';
+  $theme_registry['html__true_ajax']['theme path'] = path_to_theme();
+  $theme_registry['html__true_ajax']['preprocess functions'] = array();
+  $theme_registry['html__true_ajax']['process functions'] = array();
+
+  // Add 'page--ajax.tpl.php' template file.
+  $theme_registry['page__ajax'] = array();
+  $theme_registry['page__ajax']['template'] = 'page--ajax';
+  $theme_registry['page__ajax']['path'] = $theme_path;
+  $theme_registry['page__ajax']['render element'] = 'page';
+  $theme_registry['page__ajax']['base hook'] = 'page';
+  $theme_registry['page__ajax']['type'] = 'theme_engine';
+  $theme_registry['page__ajax']['theme path'] = path_to_theme();
+  $theme_registry['page__ajax']['preprocess functions'] = array();
+  $theme_registry['page__ajax']['process functions'] = array();
+}
+
+/**
+ * Implements hook_init().
+ */
+function views_field_tooltip_init() {
+  // TODO This should be in a separate sub-module or hook.
+  if (!empty($_GET['ajax']) && module_exists('admin_menu')) {
+    admin_menu_suppress();
+  }
+}
+
+/**
+ * Template preprocessor for `theme_page`.
+ */
+function views_field_tooltip_preprocess_page(&$variables) {
+  if (!empty($_GET['ajax'])) {
+    $variables['theme_hook_suggestions'][] = 'page__ajax';
+    drupal_add_js(drupal_get_path('module', 'views_field_tooltip') . '/js/views_field_tooltip.ajax.js');
+  }
+}
+
+/**
+ * Template preprocessor for `theme_html`.
+ */
+function views_field_tooltip_preprocess_html(&$variables) {
+  if (!empty($_GET['ajax'])) {
+    $template = !empty($_GET['true_ajax']) ? 'html__true_ajax' : 'html__ajax';
+    $variables['theme_hook_suggestions'][] = $template;
+  }
+}
+
+/**
+ * Return token replacement options for a field handler.
+ *
+ * @see views_handler_field::options_form()
+ */
+function views_field_tooltip__get_replacement_help($field_handler, $label = FALSE) {
+  // Get a list of the available fields and arguments for token replacement.
+  $options = array();
+  if ($label) {
+    foreach ($field_handler->view->display_handler->get_handlers('field') as $field => $handler) {
+      $options[t('Fields')]["[$field]"] = $handler->ui_name();
+    }
+  }
+  else {
+    foreach ($field_handler->view->display_handler->get_handlers('field') as $field => $handler) {
+      $options[t('Fields')]["[$field]"] = $handler->ui_name();
+      // We only use fields up to (and including) this one.
+      if ($field == $field_handler->options['id']) {
+        break;
+      }
+    }
+  }
+  // This lets us prepare the key as we want it printed.
+  $count = 0;
+  foreach ($field_handler->view->display_handler->get_handlers('argument') as $arg => $handler) {
+    $options[t('Arguments')]['%' . ++$count] = t('@argument title', array('@argument' => $handler->ui_name()));
+    $options[t('Arguments')]['!' . $count] = t('@argument input', array('@argument' => $handler->ui_name()));
+  }
+
+  $field_handler->document_self_tokens($options[t('Fields')]);
+
+  // Help text.
+  if (!$label) {
+    // Help text for fields.
+    if (empty($options)) {
+      // Help text for empty fields.
+      $output = t('<p>You must add some additional fields to this display before using this field. These fields may be marked as <em>Exclude from display</em> if you prefer. Note that due to rendering order, you cannot use fields that come after this field; if you need a field not listed here, rearrange your fields.</p>');
+    }
+    else {
+      // Help text for non-empty fields.
+      $output = t('<p>The following tokens are available for this field. Note that due to rendering order, you cannot use fields that come after this field; if you need a field not listed here, rearrange your fields.
+      If you would like to have the characters \'[\' and \']\' please use the html entity codes \'%5B\' or  \'%5D\' or they will get replaced with empty space.</p>');
+    }
+  }
+  else {
+    // Help text for labels.
+    if (empty($options)) {
+      // Help text for empty fields.
+      $output = t('<p>You must add some additional fields to this display before using this field. These fields may be marked as <em>Exclude from display</em> if you prefer. Note that the first row will be used as replacement values for field tokens.</p>');
+    }
+    else {
+      // Help text for non-empty fields.
+      $output = t('<p>The following tokens are available for this field. Note that the first row will be used as replacement values for field tokens.
+      If you would like to have the characters \'[\' and \']\' please use the html entity codes \'%5B\' or  \'%5D\' or they will get replaced with empty space.</p>');
+    }
+  }
+
+  if (!empty($options)) {
+    foreach (array_keys($options) as $type) {
+      if (!empty($options[$type])) {
+        $items = array();
+        foreach ($options[$type] as $key => $value) {
+          $items[] = $key . ' == ' . check_plain($value);
+        }
+        $output .= theme('item_list',
+          array(
+            'items' => $items,
+            'type' => $type,
+          ));
+      }
+    }
+  }
+  return $output;
+}
+
+/**
+ * Return all tooltip library providers.
+ */
+function views_field_tooltip_get_library_info($library = NULL) {
+  $libraries = &drupal_static(__FUNCTION__);
+  if (empty($libraries)) {
+    $libraries = module_invoke_all('views_field_tooltip_library_info');
+    drupal_alter('views_field_tooltip_library_info', $libraries);
+  }
+  if (isset($library)) {
+    return @$libraries[$library];
+  }
+  return $libraries;
+}
+
+/**
+ * Implements hook_views_field_tooltip_library_info().
+ */
+function views_field_tooltip_views_field_tooltip_library_info() {
+  return array(
+    'qtip' => array(
+      'name' => t('qTip'),
+      'help callback' => 'views_field_tooltip__qtip_get_help',
+      'needs local file' => TRUE,
+    ),
+    'qtip2' => array(
+      'name' => t('qTip2'),
+      'help callback' => 'views_field_tooltip__qtip2_get_help',
+      'needs local file' => FALSE,
+      'attached' => array(
+        'js' => array(
+          '//cdn.jsdelivr.net/qtip2/2.2.0/jquery.qtip.min.js' => 'external',
+        ),
+        'css' => array(
+          '//cdn.jsdelivr.net/qtip2/2.2.0/jquery.qtip.min.css' => 'external',
+          // CSS fixes for iframe tooltips.
+          '.html .qtip { max-width: none; }
+           .html .qtip-content { height: 100%; }
+          ' => 'inline',
+        ),
+      ),
+    ),
+  );
+}
+
+/**
+ * Return help string for qTip 1 settings.
+ */
+function views_field_tooltip__qtip_get_help() {
+  $example = <<<EOS
+{
+  "position": {
+    "corner": {
+      "tooltip": "topLeft",
+      "target": "bottomRight"
+    },
+    "adjust": {
+      "screen": true
+    }
+  },
+  "hide": {
+    "fixed": true,
+    "delay": 300,
+    "when": {
+      "event": "mouseout"
+    }
+  },
+  "show": {
+    "solo": true
+  },
+  "style": {
+    "width": 400,
+    "height": 300,
+    "classes": {
+      "content": "my-custom-class"
+    }
+  }
+}
+EOS;
+  return t('
+    Add tooltip settings in JSON format as per the <a href="@url" target="_blank">qTip documentation</a>.
+    Leave empty to use qTip defaults.
+    Note that the <code>content</code> part will be automatically filled in by each field\'s <strong>Tooltip</strong> setting.
+    Here are some common qTip settings:
+    <pre>!example</pre>
+    The <code><a href="@url_position_tooltip" target="_blank">position.corner.tooltip</a></code> and <code><a href="@url_position_target" target="_blank">position.corner.target</a></code> attributes control the tooltip\'s position relative to the question mark.
+    The <code><a href="@url_hide_fixed" target="_blank">hide.fixed = true</a></code> attribute keeps the tooltip open when moused over.
+    The <code><a href="@url_hide_delay" target="_blank">hide.delay</a></code> attribute controls the time in milliseconds by which to delay hiding the tooltip.
+    The <code><a href="@url_hide_event" target="_blank">hide.event = "mouseout"</a></code> attribute hides the tooltip when mouse hovers elsewhere.
+    The <code><a href="@url_show_solo" target="_blank">show.solo = true</a></code> attribute hides other open tooltips when a new one is activated.
+    The <code><a href="@url_style_classes" target="_blank">style.classes = "my-custom-class"</a></code> attribute adds a new CSS class to the tooltip, allowing for user-defined CSS customizations.
+    ',
+    array(
+      '@url' => 'http://craigsworks.com/projects/qtip/docs/',
+      '!example' => $example,
+      '@url_position_tooltip' => 'http://craigsworks.com/projects/qtip/docs/reference/#position-corner-tooltip',
+      '@url_position_target' => 'http://craigsworks.com/projects/qtip/docs/reference/#position-corner-target',
+      '@url_hide_fixed' => 'http://craigsworks.com/projects/qtip/docs/reference/#hide-fixed',
+      '@url_hide_delay' => 'http://craigsworks.com/projects/qtip/docs/reference/#hide-delay',
+      '@url_hide_event' => 'http://craigsworks.com/projects/qtip/docs/reference/#hide-when-event',
+      '@url_show_solo' => 'http://craigsworks.com/projects/qtip/docs/reference/#show-solo',
+      '@url_style_classes' => 'http://craigsworks.com/projects/qtip/docs/reference/#style-classes-content',
+    )
+  );
+}
+
+/**
+ * Return help string for qTip 2 settings.
+ */
+function views_field_tooltip__qtip2_get_help() {
+  $example = <<<EOS
+{
+  "position": {
+    "my": "top left",
+    "at": "bottom right",
+    "adjust": {
+      "method": "flip"
+    }
+  },
+  "hide": {
+    "fixed": true,
+    "delay": 300,
+    "event": "mouseout"
+  },
+  "show": {
+    "solo": true
+  },
+  "style": {
+    "width": "400px",
+    "height": "300px",
+    "classes": "qtip qtip-shadow my-custom-class"
+  }
+}
+EOS;
+  return t('
+    Add tooltip settings in JSON format as per the <a href="@url" target="_blank">qTip2 documentation</a>.
+    Leave empty to use qTip2 defaults.
+    Note that the <code>content</code> part will be automatically filled in by each field\'s <strong>Tooltip</strong> setting.
+    Here are some common qTip2 settings:
+    <pre>!example</pre>
+    The <code><a href="@url_position_my" target="_blank">position.my</a></code> and <code><a href="@url_position_at" target="_blank">position.at</a></code> attributes control the tooltip\'s position relative to the question mark.
+    The <code><a href="@url_position_adjustmethod" target="_blank">position.adjust.method</a></code> attribute controls the positioning behavior at the edges of the viewport.
+    The <code><a href="@url_hide_fixed" target="_blank">hide.fixed = true</a></code> attribute keeps the tooltip open when moused over.
+    The <code><a href="@url_hide_delay" target="_blank">hide.delay</a></code> attribute controls the time in milliseconds by which to delay hiding the tooltip.
+    The <code><a href="@url_hide_event" target="_blank">hide.event = "mouseout"</a></code> attribute hides the tooltip when mouse hovers elsewhere.
+    The <code><a href="@url_show_solo" target="_blank">show.solo = true</a></code> attribute hides other open tooltips when a new one is activated.
+    The <code><a href="@url_style_classes" target="_blank">style.classes = "qtip"</a></code> attribute shows the default qTip2 tooltip style.
+    The <code><a href="@url_style_classes" target="_blank">style.classes = "qtip-shadow"</a></code> attribute adds a drop shadow to the tooltip.
+    The <code><a href="@url_style_classes" target="_blank">style.classes = "my-custom-class"</a></code> attribute adds a new CSS class to the tooltip, allowing for user-defined CSS customizations.
+    ',
+    array(
+      '@url' => 'http://qtip2.com/options',
+      '!example' => $example,
+      '@url_position_my' => 'http://qtip2.com/options#position.my',
+      '@url_position_at' => 'http://qtip2.com/options#position.at',
+      '@url_position_adjustmethod' => 'http://qtip2.com/plugins#viewport.adjustmethod',
+      '@url_hide_fixed' => 'http://qtip2.com/options#hide.fixed',
+      '@url_hide_delay' => 'http://qtip2.com/options#hide.delay',
+      '@url_hide_event' => 'http://qtip2.com/options#hide.event',
+      '@url_show_solo' => 'http://qtip2.com/options#show.solo',
+      '@url_style_classes' => 'http://qtip2.com/options#style.classes',
+    )
+  );
+}
+
+// @see http://us3.php.net/manual/en/function.json-last-error-msg.php#113243
+if (!function_exists('json_last_error_msg')) {
+
+  /**
+   * Get last JSON error message.
+   */
+  function json_last_error_msg() {
+    static $errors = array(
+      JSON_ERROR_NONE             => NULL,
+      JSON_ERROR_DEPTH            => 'Maximum stack depth exceeded',
+      JSON_ERROR_STATE_MISMATCH   => 'Underflow or the modes mismatch',
+      JSON_ERROR_CTRL_CHAR        => 'Unexpected control character found',
+      JSON_ERROR_SYNTAX           => 'Syntax error, malformed JSON',
+      JSON_ERROR_UTF8             => 'Malformed UTF-8 characters, possibly incorrectly encoded',
+    );
+    $error = json_last_error();
+    return array_key_exists($error, $errors) ? $errors[$error] : "Unknown error ({$error})";
+  }
+
+}
+
+// @see http://ryanuber.com/07-10-2012/json-pretty-print-pre-5.4.html
+if (!function_exists('jsonpp')) {
+
+  /**
+   * Jsonpp - Pretty print JSON data.
+   *
+   * In versions of PHP < 5.4.x, the json_encode() function does not yet provide a
+   * pretty-print option. In lieu of forgoing the feature, an additional call can
+   * be made to this function, passing in JSON text, and (optionally) a string to
+   * be used for indentation.
+   *
+   * @param object $json
+   *   The JSON data.
+   * @param string $istr
+   *   The indentation string.
+   *
+   * @return string
+   */
+  function jsonpp($json, $istr = '  ') {
+    if (empty($json)) {
+      return '';
+    }
+    if (version_compare(PHP_VERSION, '5.4.0') >= 0) {
+      return json_encode($json, JSON_PRETTY_PRINT);
+    }
+
+    $json = json_encode($json);
+    $result = '';
+    for ($p = $q = $i = 0; isset($json[$p]); $p++) {
+      $json[$p] == '"' && ($p > 0 ? $json[$p - 1] : '') != '\\' && $q = !$q;
+      if (strchr('}]', $json[$p]) && !$q && $i--) {
+        strchr('{[', $json[$p - 1]) || $result .= "\n" . str_repeat($istr, $i);
+      }
+      $result .= $json[$p];
+      if (strchr(',{[', $json[$p]) && !$q) {
+        $i += strchr('{[', $json[$p]) === FALSE ? 0 : 1;
+        strchr('}]', $json[$p + 1]) || $result .= "\n" . str_repeat($istr, $i);
+      }
+    }
+    return $result;
+  }
+
+}
+
+// @see http://php.net/manual/en/function.array-filter.php#87581
+if (!function_exists('array_filter_recursive')) {
+
+  /**
+   * Filters an array recursively.
+   */
+  function array_filter_recursive($input, $callback = NULL) {
+    foreach ($input as &$value) {
+      if (is_array($value)) {
+        $value = array_filter_recursive($value, $callback);
+      }
+    }
+    return $callback ? array_filter($input, $callback) : array_filter($input);
+  }
+
+}

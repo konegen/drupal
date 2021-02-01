@@ -1,0 +1,5 @@
+[user]
+	email = konegen@teco.edu
+	name = konegen
+[credential]
+	helper = "!f() { /root/.vscode-server/bin/ea3859d4ba2f3e577a159bc91e3074c5d85c0523/node /tmp/vscode-remote-containers-988abf473513cbe7559e9cca568939833410c4bb.js $*; }; f"

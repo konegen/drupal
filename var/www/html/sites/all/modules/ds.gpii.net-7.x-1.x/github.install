@@ -1,0 +1,33 @@
+<?php
+
+/**
+ * @file
+ * Install file for github_projects module.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function github_schema() {
+  module_load_include('install', 'remote_entity');
+  $schema = array();
+
+  $schema['github_remote_repositories'] = remote_entity_schema_table('github remote entity');
+
+  return $schema;
+}
+
+/**
+ * Implements hook_install().
+ */
+function github_install() {
+  cache_clear_all('plugins:feeds:plugins', 'cache');
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function github_uninstall() {
+//  $vocabulary = taxonomy_vocabulary_machine_name_load('github_topics');
+//  taxonomy_vocabulary_delete($vocabulary->vid);
+}
